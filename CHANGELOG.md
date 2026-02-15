@@ -12,5 +12,19 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - Initial project setup with ESP32-C3 (XIAO) target
 - Embassy async runtime with esp-hal
 - BLE and WiFi support via esp-wifi
+- WS2812 LED support via esp-hal-smartled2 and smart-leds
 - Project guidelines (CLAUDE.md)
 - Changelog
+
+### Changed
+
+- Upgraded esp-hal to 1.0.0 (from 1.0.0-beta.0)
+- Replaced esp-wifi with esp-radio 0.17.0
+- Replaced esp-hal-embassy with esp-rtos 0.2.0
+- Bumped embassy-executor to 0.9.1, embassy-time to 0.5.0, embassy-net to 0.8.0
+- Bumped esp-alloc to 0.9.0
+- Switched entry point to `#[esp_rtos::main]`
+
+### Removed
+
+- ws2812-esp32-rmt-driver (incompatible with bare-metal no_std)
