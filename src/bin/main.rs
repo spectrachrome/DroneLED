@@ -29,11 +29,11 @@ extern crate alloc;
 esp_bootloader_esp_idf::esp_app_desc!();
 use alloc::string::ToString;
 
-/// Number of WS2812 LEDs in the strip.
-const NUM_LEDS: usize = 150;
+/// Maximum number of WS2812 LEDs supported (compile-time buffer size).
+const MAX_LEDS: usize = 200;
 
 /// RMT buffer size: 24 bits per LED (8 per channel * 3 channels) + 1 end marker.
-const BUFFER_SIZE: usize = NUM_LEDS * 24 + 1;
+const BUFFER_SIZE: usize = MAX_LEDS * 24 + 1;
 
 /// Wi-Fi AP SSID.
 const WIFI_SSID: &str = "XIAO-LED-Controller";
@@ -41,16 +41,8 @@ const WIFI_SSID: &str = "XIAO-LED-Controller";
 /// AP static IP address.
 const AP_IP: Ipv4Address = Ipv4Address::new(192, 168, 4, 1);
 
-/// Simple HTML test page served by the AP.
-const TEST_PAGE: &str = r#"<!DOCTYPE html>
-<html>
-<head><title>XIAO LED Controller</title></head>
-<body>
-<h1>XIAO LED Controller</h1>
-<p>Wi-Fi AP is running. LED strip is active.</p>
-<p>LEDs configured: 150</p>
-</body>
-</html>"#;
+/// Maximum number of active LEDs (must match `MAX_LEDS`).
+const MAX_NUM_LEDS: u16 = MAX_LEDS as u16;
 
 #[esp_hal::main]
 fn main() -> ! {
@@ -174,19 +166,21 @@ fn clamp_brightness(buf: &[RGB8], brightness: u8, max_ma: u32) -> u8 {
 #[embassy_executor::task]
 async fn led_task(mut driver: Ws2812SmartLeds<'static, BUFFER_SIZE, esp_hal::Blocking>) {
     let mut pattern = RippleEffect::new(0xDEAD_BEEF);
-    let mut buf = [RGB8 { r: 0, g: 0, b: 0 }; NUM_LEDS];
+    let mut buf = [RGB8 { r: 0, g: 0, b: 0 }; MAX_LEDS];
 
     loop {
-        pattern.render(&mut buf);
-
         let state = STATE.lock().await;
+        let num_leds = state.num_leds.min(MAX_NUM_LEDS) as usize;
         let led_brightness = state.brightness;
         let max_ma = state.max_current_ma;
         drop(state);
 
-        let clamped = clamp_brightness(&buf, led_brightness, max_ma);
+        let active = &mut buf[..num_leds];
+        pattern.render(active);
 
-        if let Err(e) = driver.write(brightness(buf.iter().copied(), clamped)) {
+        let clamped = clamp_brightness(active, led_brightness, max_ma);
+
+        if let Err(e) = driver.write(brightness(active.iter().copied(), clamped)) {
             defmt::warn!("LED write error: {}", defmt::Debug2Format(&e));
         }
 
@@ -262,7 +256,69 @@ async fn dhcp_server(stack: Stack<'static>) {
     }
 }
 
-/// Simple HTTP server serving a test page.
+/// Parse query parameters from a request path, updating state values.
+///
+/// Expects the query portion after `?`, e.g. `brightness=128&num_leds=100`.
+/// Unknown keys are silently ignored.
+fn parse_query_params(query: &str, state: &mut xiao_drone_led_controller::state::LedState) {
+    for pair in query.split('&') {
+        if let Some((key, value)) = pair.split_once('=') {
+            match key {
+                "brightness" => {
+                    if let Ok(v) = value.parse::<u16>() {
+                        state.brightness = v.min(255) as u8;
+                    }
+                }
+                "num_leds" => {
+                    if let Ok(v) = value.parse::<u16>() {
+                        state.num_leds = v.clamp(1, MAX_NUM_LEDS);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Build the HTML control page with current state values injected.
+fn build_html_page(brightness: u8, num_leds: u16) -> alloc::string::String {
+    alloc::format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XIAO LED Controller</title>
+<style>
+body{{font-family:sans-serif;max-width:480px;margin:20px auto;padding:0 16px}}
+h1{{font-size:1.4em}}
+label{{display:block;margin:16px 0 4px;font-weight:bold}}
+input[type=range]{{width:100%}}
+.val{{font-size:1.2em;color:#06c}}
+</style>
+</head>
+<body>
+<h1>XIAO LED Controller</h1>
+<label>Brightness: <span id="bv" class="val">{brightness}</span></label>
+<input type="range" id="br" min="0" max="255" value="{brightness}">
+<label>LED Count: <span id="lv" class="val">{num_leds}</span></label>
+<input type="range" id="lc" min="1" max="{max}" value="{num_leds}">
+<script>
+var br=document.getElementById('br'),lc=document.getElementById('lc');
+var bv=document.getElementById('bv'),lv=document.getElementById('lv');
+var t;
+function send(){{fetch('/set?brightness='+br.value+'&num_leds='+lc.value)}}
+br.oninput=function(){{bv.textContent=br.value;clearTimeout(t);t=setTimeout(send,80)}};
+lc.oninput=function(){{lv.textContent=lc.value;clearTimeout(t);t=setTimeout(send,80)}};
+</script>
+</body>
+</html>"#,
+        brightness = brightness,
+        num_leds = num_leds,
+        max = MAX_NUM_LEDS,
+    )
+}
+
+/// HTTP server with interactive LED control page.
 #[embassy_executor::task]
 async fn web_server(stack: Stack<'static>) {
     // Wait until the stack is configured
@@ -275,7 +331,7 @@ async fn web_server(stack: Stack<'static>) {
     info!("Web server listening on 192.168.4.1:80");
 
     let mut rx_buffer = [0u8; 1024];
-    let mut tx_buffer = [0u8; 2048];
+    let mut tx_buffer = [0u8; 4096];
 
     loop {
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
@@ -286,25 +342,47 @@ async fn web_server(stack: Stack<'static>) {
             continue;
         }
 
-        info!("Client connected");
-
-        // Read request (we don't parse it, just drain it)
+        // Read HTTP request
         let mut buf = [0u8; 512];
-        match socket.read(&mut buf).await {
+        let n = match socket.read(&mut buf).await {
             Ok(0) | Err(_) => {
                 continue;
             }
-            Ok(_) => {}
+            Ok(n) => n,
+        };
+
+        // Extract the request path from the first line (e.g. "GET /set?brightness=128 HTTP/1.1")
+        let request = core::str::from_utf8(&buf[..n]).unwrap_or("");
+        let path = request
+            .split_once(' ')       // skip method
+            .and_then(|(_, rest)| rest.split_once(' ')) // isolate path from HTTP version
+            .map(|(path, _)| path)
+            .unwrap_or("/");
+
+        if path.starts_with("/set") {
+            // Parse query params and update state
+            if let Some((_, query)) = path.split_once('?') {
+                let mut state = STATE.lock().await;
+                parse_query_params(query, &mut state);
+            }
+
+            let response = b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+            let _ = socket.write_all(response).await;
+        } else {
+            // Serve the control page with current values
+            let state = STATE.lock().await;
+            let page = build_html_page(state.brightness, state.num_leds);
+            drop(state);
+
+            let header = alloc::format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                page.len()
+            );
+
+            let _ = socket.write_all(header.as_bytes()).await;
+            let _ = socket.write_all(page.as_bytes()).await;
         }
 
-        // Send HTTP response
-        let response_header = alloc::format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            TEST_PAGE.len()
-        );
-
-        let _ = socket.write_all(response_header.as_bytes()).await;
-        let _ = socket.write_all(TEST_PAGE.as_bytes()).await;
         let _ = socket.flush().await;
         socket.close();
         Timer::after(Duration::from_millis(50)).await;

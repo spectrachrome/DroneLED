@@ -7,7 +7,8 @@
       "Bash(cargo search:*)",
       "Bash(cargo clippy:*)",
       "Bash(git -C /Users/moritz/Documents/Projects/FPV/VX3.5_XIAO_LED_Controller/xiao_drone_led_controller status)",
-      "Bash(git -C /Users/moritz/Documents/Projects/FPV/VX3.5_XIAO_LED_Controller/xiao_drone_led_controller log --oneline -3)"
+      "Bash(git -C /Users/moritz/Documents/Projects/FPV/VX3.5_XIAO_LED_Controller/xiao_drone_led_controller log --oneline -3)",
+      "WebFetch(domain:docs.rs)"
     ]
   }
 }

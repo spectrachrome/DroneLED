@@ -9,6 +9,9 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 
 ### Added
 
+- Interactive web UI with brightness slider (0–255) and LED count slider (1–200)
+- `/set` HTTP endpoint for real-time parameter updates via query params
+- Configurable `num_leds` field in `LedState` (default 150, max 200)
 - `Pattern` trait in `src/pattern.rs` for modular LED patterns
 - `RainbowCycle` pattern implementing `Pattern` trait
 - `RippleEffect` pattern: particle-based expanding rings on ring topology with random hues and deep navy background
@@ -29,6 +32,9 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 
 ### Changed
 
+- `NUM_LEDS` renamed to `MAX_LEDS` (200) as compile-time buffer max; active count is now runtime-configurable
+- Static HTML test page replaced with interactive control UI
+- Web server tx_buffer increased to 4096 to fit HTML page
 - Upgraded esp-hal to 1.0.0 (from 1.0.0-beta.0)
 - Replaced esp-wifi with esp-radio 0.17.0
 - Replaced esp-hal-embassy with esp-rtos 0.2.0
