@@ -15,8 +15,8 @@ embassy-net = { version = "0.8.0", features = [
   "tcp",
   "udp",
 ] }
-embedded-io = "0.6.1"
-embedded-io-async = "0.6.1"
+embedded-io = "0.7.1"
+embedded-io-async = "0.7.0"
 esp-alloc = "0.9.0"
 esp-hal = { version = "1.0.0", features = [
   "defmt",
@@ -65,6 +65,7 @@ heapless = { version = "0.8.0", default-features = false }
 static_cell = { version = "2.1.0", features = ["nightly"] }
 esp-hal-smartled2 = { version = "*", features = ["esp32c3"] }
 smart-leds = "0.4.0"
+esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32c3"] }
 
 [profile.dev]
 # Rust debug is too slow.
