@@ -73,7 +73,7 @@ impl AnimModeParams {
             AnimMode::Static => AnimModeParams::Static,
             AnimMode::Pulse => AnimModeParams::Pulse {
                 speed: 600,
-                min_intensity_pct: 40,
+                min_intensity_pct: 42,
             },
             AnimMode::Ripple => AnimModeParams::Ripple {
                 speed_x10: 15,
@@ -114,6 +114,14 @@ pub struct LedState {
     pub color_mode: ColorMode,
     /// Color-scheme-specific parameters.
     pub color_params: ColorModeParams,
+    /// Per-channel color balance: red (0–255).
+    pub color_bal_r: u8,
+    /// Per-channel color balance: green (0–255).
+    pub color_bal_g: u8,
+    /// Per-channel color balance: blue (0–255).
+    pub color_bal_b: u8,
+    /// Use HSI color space instead of HSV for rainbow (more uniform perceived brightness).
+    pub use_hsi: bool,
     /// Active animation type.
     pub anim_mode: AnimMode,
     /// Animation-specific parameters.
@@ -130,6 +138,10 @@ impl Default for LedState {
             flight_mode: FlightMode::ArmingForbidden,
             color_mode: ColorMode::Split,
             color_params: ColorModeParams::default(),
+            color_bal_r: 255,
+            color_bal_g: 180,
+            color_bal_b: 240,
+            use_hsi: false,
             anim_mode: AnimMode::Pulse,
             anim_params: AnimModeParams::default_for(AnimMode::Pulse),
         }
@@ -147,9 +159,13 @@ pub static STATE: Mutex<CriticalSectionRawMutex, LedState> = Mutex::new(LedState
     flight_mode: FlightMode::ArmingForbidden,
     color_mode: ColorMode::Split,
     color_params: ColorModeParams { hue_speed: 1 },
+    color_bal_r: 255,
+    color_bal_g: 180,
+    color_bal_b: 240,
+    use_hsi: false,
     anim_mode: AnimMode::Pulse,
     anim_params: AnimModeParams::Pulse {
         speed: 600,
-        min_intensity_pct: 40,
+        min_intensity_pct: 42,
     },
 });

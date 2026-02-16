@@ -147,7 +147,7 @@ async fn wifi_keepalive(wifi_controller: esp_radio::wifi::WifiController<'static
 }
 
 /// Build a [`ColorScheme`] from the current [`ColorMode`].
-fn build_color_scheme(mode: ColorMode) -> ColorScheme {
+fn build_color_scheme(mode: ColorMode, use_hsi: bool) -> ColorScheme {
     match mode {
         ColorMode::SolidGreen => ColorScheme::Solid(RGB8 { r: 0, g: 204, b: 0 }),
         ColorMode::SolidRed => ColorScheme::Solid(RGB8 { r: 204, g: 0, b: 0 }),
@@ -155,7 +155,7 @@ fn build_color_scheme(mode: ColorMode) -> ColorScheme {
             RGB8 { r: 0, g: 204, b: 0 },
             RGB8 { r: 204, g: 0, b: 0 },
         ),
-        ColorMode::Rainbow => ColorScheme::Rainbow { hue: 0, speed: 1 },
+        ColorMode::Rainbow => ColorScheme::Rainbow { hue: 0, speed: 1, use_hsi },
     }
 }
 
@@ -169,8 +169,9 @@ async fn led_task(spi_bus: SpiDmaBus<'static, esp_hal::Blocking>) {
     let mut ripple = RippleEffect::new(0xDEAD_BEEF);
     let mut static_anim = StaticAnim;
 
-    let mut color_scheme = build_color_scheme(ColorMode::Split);
+    let mut color_scheme = build_color_scheme(ColorMode::Split, false);
     let mut prev_color_mode = ColorMode::Split;
+    let mut prev_use_hsi = false;
 
     let mut buf = [RGB8 { r: 0, g: 0, b: 0 }; MAX_LEDS];
     let mut write_err_logged = false;
@@ -183,14 +184,19 @@ async fn led_task(spi_bus: SpiDmaBus<'static, esp_hal::Blocking>) {
         let fps = state.fps.max(1);
         let color_mode = state.color_mode;
         let color_params = state.color_params;
+        let use_hsi = state.use_hsi;
+        let bal_r = state.color_bal_r;
+        let bal_g = state.color_bal_g;
+        let bal_b = state.color_bal_b;
         let anim_mode = state.anim_mode;
         let anim_params = state.anim_params;
         drop(state);
 
-        // Rebuild color scheme when the mode changes, preserving rainbow hue otherwise.
-        if color_mode != prev_color_mode {
-            color_scheme = build_color_scheme(color_mode);
+        // Rebuild color scheme when the mode or HSI toggle changes, preserving rainbow hue otherwise.
+        if color_mode != prev_color_mode || use_hsi != prev_use_hsi {
+            color_scheme = build_color_scheme(color_mode, use_hsi);
             prev_color_mode = color_mode;
+            prev_use_hsi = use_hsi;
         }
         color_scheme.set_hue_speed(color_params.hue_speed);
 
@@ -218,6 +224,7 @@ async fn led_task(spi_bus: SpiDmaBus<'static, esp_hal::Blocking>) {
 
         let pipeline = [
             PostEffect::Gamma,
+            PostEffect::ColorBalance { r: bal_r, g: bal_g, b: bal_b },
             PostEffect::Brightness(led_brightness),
             PostEffect::CurrentLimit { max_ma },
         ];
@@ -372,6 +379,24 @@ fn parse_query_params(query: &str, state: &mut xiao_drone_led_controller::state:
                     }
                 }
                 "color" | "anim" => { /* already handled above */ }
+                "bal_r" => {
+                    if let Ok(v) = value.parse::<u16>() {
+                        state.color_bal_r = v.min(255) as u8;
+                    }
+                }
+                "bal_g" => {
+                    if let Ok(v) = value.parse::<u16>() {
+                        state.color_bal_g = v.min(255) as u8;
+                    }
+                }
+                "bal_b" => {
+                    if let Ok(v) = value.parse::<u16>() {
+                        state.color_bal_b = v.min(255) as u8;
+                    }
+                }
+                "use_hsi" => {
+                    state.use_hsi = value == "1";
+                }
                 "hue_speed" => {
                     if let Ok(v) = value.parse::<u8>() {
                         state.color_params.hue_speed = v.clamp(1, 10);
@@ -447,6 +472,11 @@ fn build_html_page(state: &xiao_drone_led_controller::state::LedState) -> alloc:
     let anim_mode = state.anim_mode;
     let anim_params = state.anim_params;
     let hue_speed = state.color_params.hue_speed;
+    let bal_r = state.color_bal_r;
+    let bal_g = state.color_bal_g;
+    let bal_b = state.color_bal_b;
+    let use_hsi = state.use_hsi;
+    let hsi_checked = if use_hsi { " checked" } else { "" };
 
     // Extract param values (use defaults for non-matching variants).
     let (pulse_speed, min_brightness) = match anim_params {
@@ -517,8 +547,15 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:20px;heig
 <input type="range" id="fp" min="1" max="150" value="{fps}"></div>
 <div class="g"><label>Current Limit <span class="v" id="cv">{max_current_ma}</span> mA</label>
 <input type="range" id="cl" min="100" max="2500" step="50" value="{max_current_ma}"></div>
+<div class="g"><label>Balance R <span class="v" id="brv">{bal_r}</span></label>
+<input type="range" id="blr" min="0" max="255" value="{bal_r}"></div>
+<div class="g"><label>Balance G <span class="v" id="bgv">{bal_g}</span></label>
+<input type="range" id="blg" min="0" max="255" value="{bal_g}"></div>
+<div class="g"><label>Balance B <span class="v" id="bbv">{bal_b}</span></label>
+<input type="range" id="blb" min="0" max="255" value="{bal_b}"></div>
 <div class="g pm" data-color="rainbow"><label>Hue Speed <span class="v" id="hsv">{hue_speed}</span></label>
 <input type="range" id="hs" min="1" max="10" value="{hue_speed}"></div>
+<div class="g pm" data-color="rainbow"><label><input type="checkbox" id="hi"{hsi_checked}> Use HSI color space</label></div>
 <div class="g pm" data-anim="pulse"><label>Pulse Speed <span class="v" id="psv">{pulse_speed}</span></label>
 <input type="range" id="ps" min="100" max="2000" value="{pulse_speed}"></div>
 <div class="g pm" data-anim="pulse"><label>Min Brightness <span class="v" id="mbv">{min_brightness}</span>%</label>
@@ -533,11 +570,13 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:20px;heig
 <div id="sb"></div>
 <script>
 var br=document.getElementById('br'),lc=document.getElementById('lc'),fp=document.getElementById('fp'),cl=document.getElementById('cl');
+var blr=document.getElementById('blr'),blg=document.getElementById('blg'),blb=document.getElementById('blb');
 var cm=document.getElementById('cm'),am=document.getElementById('am');
 var bv=document.getElementById('bv'),lv=document.getElementById('lv'),fv=document.getElementById('fv'),cv=document.getElementById('cv');
+var brv=document.getElementById('brv'),bgv=document.getElementById('bgv'),bbv=document.getElementById('bbv');
 var ps=document.getElementById('ps'),mb=document.getElementById('mb');
 var rs=document.getElementById('rs'),rw=document.getElementById('rw'),rd=document.getElementById('rd');
-var hs=document.getElementById('hs');
+var hs=document.getElementById('hs'),hi=document.getElementById('hi');
 var psv=document.getElementById('psv'),mbv=document.getElementById('mbv');
 var rsv=document.getElementById('rsv'),rwv=document.getElementById('rwv'),rdv=document.getElementById('rdv');
 var hsv=document.getElementById('hsv');
@@ -545,10 +584,11 @@ var t;
 function updateVis(){{var c=cm.value,a=am.value;document.querySelectorAll('.pm').forEach(function(el){{var sc=el.dataset.color,sa=el.dataset.anim;var show=true;if(sc)show=show&&sc===c;if(sa)show=show&&sa===a;el.style.display=show?'':'none'}})}}
 var sb=document.getElementById('sb'),con=null,ht;
 function toast(ok){{if(ok===con)return;con=ok;sb.textContent=ok?'Connected':'Disconnected';sb.className=ok?'show ok':'show err';clearTimeout(ht);if(ok)ht=setTimeout(function(){{sb.className=''}},2000)}}
-function send(){{var q='brightness='+br.value+'&num_leds='+lc.value+'&fps='+fp.value+'&max_current_ma='+cl.value+'&color='+cm.value+'&anim='+am.value;var c=cm.value,a=am.value;if(c==='rainbow')q+='&hue_speed='+hs.value;if(a==='pulse')q+='&pulse_speed='+ps.value+'&min_brightness='+mb.value;if(a==='ripple')q+='&ripple_speed='+rs.value+'&ripple_width='+rw.value+'&ripple_decay='+rd.value;fetch('/set?'+q).then(function(){{toast(true)}}).catch(function(){{toast(false)}})}}
+function send(){{var q='brightness='+br.value+'&num_leds='+lc.value+'&fps='+fp.value+'&max_current_ma='+cl.value+'&bal_r='+blr.value+'&bal_g='+blg.value+'&bal_b='+blb.value+'&color='+cm.value+'&anim='+am.value;var c=cm.value,a=am.value;if(c==='rainbow')q+='&hue_speed='+hs.value+'&use_hsi='+(hi.checked?'1':'0');if(a==='pulse')q+='&pulse_speed='+ps.value+'&min_brightness='+mb.value;if(a==='ripple')q+='&ripple_speed='+rs.value+'&ripple_width='+rw.value+'&ripple_decay='+rd.value;fetch('/set?'+q).then(function(){{toast(true)}}).catch(function(){{toast(false)}})}}
 setInterval(function(){{fetch('/set').then(function(){{toast(true)}}).catch(function(){{toast(false)}})}},3000);
 function sl(el,vl){{el.oninput=function(){{vl.textContent=el.value;clearTimeout(t);t=setTimeout(send,80)}}}}
-sl(br,bv);sl(lc,lv);sl(fp,fv);sl(cl,cv);sl(ps,psv);sl(mb,mbv);sl(rs,rsv);sl(rw,rwv);sl(rd,rdv);sl(hs,hsv);
+sl(br,bv);sl(lc,lv);sl(fp,fv);sl(cl,cv);sl(blr,brv);sl(blg,bgv);sl(blb,bbv);sl(ps,psv);sl(mb,mbv);sl(rs,rsv);sl(rw,rwv);sl(rd,rdv);sl(hs,hsv);
+hi.onchange=function(){{send()}};
 var _bro=br.oninput;br.oninput=function(){{_bro.call(this);ubr()}};
 function ubr(){{var v=br.value/255;br.style.background='rgb('+Math.round(51+5*v)+','+Math.round(65+124*v)+','+Math.round(85+163*v)+')'}}
 ubr();
@@ -575,7 +615,11 @@ updateVis();
         ripple_speed = ripple_speed,
         ripple_width = ripple_width,
         ripple_decay = ripple_decay,
+        bal_r = bal_r,
+        bal_g = bal_g,
+        bal_b = bal_b,
         hue_speed = hue_speed,
+        hsi_checked = hsi_checked,
     )
 }
 

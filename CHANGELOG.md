@@ -18,8 +18,15 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - Two dropdown selectors in web UI: "Color" and "Animation" (independently selectable)
 - `ColorMode`, `AnimMode`, `ColorModeParams`, `AnimModeParams` in `src/state.rs`
 - Per-axis param slider visibility: `data-color` and `data-anim` attributes checked independently
+- `hsi_to_rgb()` function in `src/pattern.rs` — HSI color space conversion for more uniform perceived brightness across hues (ported from [SO#69328218](https://stackoverflow.com/q/69328218), CC BY-SA 4.0)
+- Runtime "Use HSI color space" checkbox in web UI (rainbow color mode only), backed by `use_hsi` field in `LedState`
+- Per-channel gamma correction LUTs: R γ=2.6, G γ=2.7, B γ=2.5 (768 bytes flash) — steeper green curve tames eye sensitivity and WS2812B green die efficiency
+- `PostEffect::ColorBalance { r, g, b }` — per-channel max scaling (0–255), applied after gamma
+- Runtime "Balance R/G/B" sliders in web UI (defaults: R=255, G=180, B=240, matching typical WS2812B correction)
 
 ### Changed
+
+- Default pulse `min_intensity_pct` raised from 40 to 42
 
 - Animation mode changes in web UI reset animation params to defaults
 - `led_task` maintains a `ColorScheme` instance, rebuilds on color mode change

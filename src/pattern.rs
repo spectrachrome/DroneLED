@@ -8,6 +8,55 @@ use smart_leds::RGB8;
 use smart_leds::hsv::{Hsv, hsv2rgb};
 
 // ---------------------------------------------------------------------------
+// HSI color space conversion
+// ---------------------------------------------------------------------------
+
+/// Convert HSI (Hue, Saturation, Intensity) to RGB.
+///
+/// HSI provides more perceptually uniform brightness across hues compared to
+/// HSV — pure blue, green, and red all appear at similar perceived intensity.
+///
+/// * `hue` — 0–255 (mapped internally to 0°–360°)
+/// * `sat` — 0–255 (mapped to 0.0–1.0)
+/// * `val` — 0–255 (mapped to 0.0–1.0 intensity)
+///
+/// Ported from <https://stackoverflow.com/q/69328218>
+/// Original by ChildrenofkoRn (CC BY-SA 4.0).
+pub fn hsi_to_rgb(hue: u8, sat: u8, val: u8) -> RGB8 {
+    let h = hue as f32 * 360.0 / 256.0;
+    let s = sat as f32 / 255.0;
+    let i = val as f32 / 255.0;
+
+    let h60 = h / 60.0;
+    let z = 1.0 - (h60 % 2.0 - 1.0).abs();
+    let c = (3.0 * i * s) / (1.0 + z);
+    let x = c * z;
+
+    let (r1, g1, b1) = if h60 < 1.0 {
+        (c, x, 0.0)
+    } else if h60 < 2.0 {
+        (x, c, 0.0)
+    } else if h60 < 3.0 {
+        (0.0, c, x)
+    } else if h60 < 4.0 {
+        (0.0, x, c)
+    } else if h60 < 5.0 {
+        (x, 0.0, c)
+    } else if h60 < 6.0 {
+        (c, 0.0, x)
+    } else {
+        (0.0, 0.0, 0.0)
+    };
+
+    let m = i * (1.0 - s);
+    RGB8 {
+        r: ((r1 + m) * 255.0 + 0.5) as u8,
+        g: ((g1 + m) * 255.0 + 0.5) as u8,
+        b: ((b1 + m) * 255.0 + 0.5) as u8,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Color schemes
 // ---------------------------------------------------------------------------
 
@@ -17,12 +66,14 @@ pub enum ColorScheme {
     Solid(RGB8),
     /// First half one color, second half another (port / starboard).
     Split(RGB8, RGB8),
-    /// HSV rainbow gradient that shifts over time.
+    /// Rainbow gradient that shifts over time.
     Rainbow {
         /// Current base hue (advances each tick).
         hue: u8,
         /// Hue increment per tick.
         speed: u8,
+        /// Use HSI color space instead of HSV for more uniform perceived brightness.
+        use_hsi: bool,
     },
 }
 
@@ -34,24 +85,25 @@ impl ColorScheme {
             ColorScheme::Split(a, b) => {
                 if index < num_leds / 2 { *a } else { *b }
             }
-            ColorScheme::Rainbow { hue, .. } => {
+            ColorScheme::Rainbow { hue, use_hsi, .. } => {
                 let offset = if num_leds == 0 {
                     0
                 } else {
                     (index * 256 / num_leds) as u8
                 };
-                hsv2rgb(Hsv {
-                    hue: hue.wrapping_add(offset),
-                    sat: 255,
-                    val: 255,
-                })
+                let h = hue.wrapping_add(offset);
+                if *use_hsi {
+                    hsi_to_rgb(h, 255, 255)
+                } else {
+                    hsv2rgb(Hsv { hue: h, sat: 255, val: 255 })
+                }
             }
         }
     }
 
     /// Advance time-dependent state (e.g. rainbow hue rotation).
     pub fn tick(&mut self) {
-        if let ColorScheme::Rainbow { hue, speed } = self {
+        if let ColorScheme::Rainbow { hue, speed, .. } = self {
             *hue = hue.wrapping_add(*speed);
         }
     }
@@ -60,6 +112,13 @@ impl ColorScheme {
     pub fn set_hue_speed(&mut self, new_speed: u8) {
         if let ColorScheme::Rainbow { speed, .. } = self {
             *speed = new_speed;
+        }
+    }
+
+    /// Toggle HSI vs HSV color space (only affects `Rainbow`).
+    pub fn set_use_hsi(&mut self, enabled: bool) {
+        if let ColorScheme::Rainbow { use_hsi, .. } = self {
+            *use_hsi = enabled;
         }
     }
 }
@@ -360,7 +419,7 @@ mod tests {
 
     #[test]
     fn color_scheme_rainbow_varies() {
-        let c = ColorScheme::Rainbow { hue: 0, speed: 1 };
+        let c = ColorScheme::Rainbow { hue: 0, speed: 1, use_hsi: false };
         let a = c.color_at(0, 10);
         let b = c.color_at(5, 10);
         assert_ne!(a, b);
@@ -368,7 +427,7 @@ mod tests {
 
     #[test]
     fn color_scheme_tick_advances_rainbow() {
-        let mut c = ColorScheme::Rainbow { hue: 0, speed: 5 };
+        let mut c = ColorScheme::Rainbow { hue: 0, speed: 5, use_hsi: false };
         let before = match c { ColorScheme::Rainbow { hue, .. } => hue, _ => unreachable!() };
         c.tick();
         let after = match c { ColorScheme::Rainbow { hue, .. } => hue, _ => unreachable!() };
@@ -446,6 +505,40 @@ mod tests {
         pulse.render(&mut buf, &mut colors);
         // All LEDs should be the same (solid color + uniform pulse)
         assert!(buf.windows(2).all(|w| w[0] == w[1]));
+    }
+
+    #[test]
+    fn hsi_to_rgb_red_at_hue_zero() {
+        // Hue 0 with full sat/val should be pure red
+        let c = hsi_to_rgb(0, 255, 255);
+        assert_eq!(c.r, 255);
+        assert_eq!(c.g, 0);
+        assert_eq!(c.b, 0);
+    }
+
+    #[test]
+    fn hsi_to_rgb_black_at_zero_intensity() {
+        let c = hsi_to_rgb(100, 255, 0);
+        assert_eq!(c, RGB8 { r: 0, g: 0, b: 0 });
+    }
+
+    #[test]
+    fn hsi_to_rgb_white_at_zero_saturation() {
+        // Zero saturation with full intensity = grey/white
+        let c = hsi_to_rgb(42, 0, 255);
+        assert_eq!(c.r, c.g);
+        assert_eq!(c.g, c.b);
+        assert_eq!(c.r, 255);
+    }
+
+    #[test]
+    fn rainbow_hsi_differs_from_hsv() {
+        let hsv_scheme = ColorScheme::Rainbow { hue: 0, speed: 1, use_hsi: false };
+        let hsi_scheme = ColorScheme::Rainbow { hue: 0, speed: 1, use_hsi: true };
+        // At mid-strip the two color spaces should give different results
+        let hsv_color = hsv_scheme.color_at(5, 10);
+        let hsi_color = hsi_scheme.color_at(5, 10);
+        assert_ne!(hsv_color, hsi_color);
     }
 
     #[test]
