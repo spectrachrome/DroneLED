@@ -49,7 +49,8 @@ Updates LED parameters via query string. Returns `204 No Content`.
 | Parameter    | Type | Range   | Description                  |
 |--------------|------|---------|------------------------------|
 | `brightness` | int  | 0–255   | Global brightness level      |
-| `num_leds`   | int  | 1–200   | Number of active LEDs driven |
+| `num_leds`   | int  | 1–150   | Number of active LEDs driven |
+| `fps`        | int  | 1–150   | Animation frame rate         |
 
 Both parameters are optional and can be combined.
 
@@ -59,6 +60,7 @@ Both parameters are optional and can be combined.
 GET /set?brightness=128
 GET /set?num_leds=60
 GET /set?brightness=200&num_leds=100
+GET /set?fps=30
 ```
 
 ## Project Structure
@@ -68,7 +70,7 @@ src/
   bin/main.rs   — entry point, task spawning, LED/Wi-Fi/DHCP/HTTP tasks
   lib.rs        — crate root
   pattern.rs    — Pattern trait and LED pattern implementations
-  state.rs      — shared LedState (brightness, num_leds, flight mode) via async mutex
+  state.rs      — shared LedState (brightness, num_leds, fps, flight mode) via async mutex
 ```
 
 ## License

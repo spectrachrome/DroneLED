@@ -30,7 +30,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 use alloc::string::ToString;
 
 /// Maximum number of WS2812 LEDs supported (compile-time buffer size).
-const MAX_LEDS: usize = 200;
+const MAX_LEDS: usize = 150;
 
 /// RMT buffer size: 24 bits per LED (8 per channel * 3 channels) + 1 end marker.
 const BUFFER_SIZE: usize = MAX_LEDS * 24 + 1;
@@ -167,12 +167,14 @@ fn clamp_brightness(buf: &[RGB8], brightness: u8, max_ma: u32) -> u8 {
 async fn led_task(mut driver: Ws2812SmartLeds<'static, BUFFER_SIZE, esp_hal::Blocking>) {
     let mut pattern = RippleEffect::new(0xDEAD_BEEF);
     let mut buf = [RGB8 { r: 0, g: 0, b: 0 }; MAX_LEDS];
+    let mut write_err_logged = false;
 
     loop {
         let state = STATE.lock().await;
         let num_leds = state.num_leds.min(MAX_NUM_LEDS) as usize;
         let led_brightness = state.brightness;
         let max_ma = state.max_current_ma;
+        let fps = state.fps.max(1);
         drop(state);
 
         let active = &mut buf[..num_leds];
@@ -180,11 +182,20 @@ async fn led_task(mut driver: Ws2812SmartLeds<'static, BUFFER_SIZE, esp_hal::Blo
 
         let clamped = clamp_brightness(active, led_brightness, max_ma);
 
-        if let Err(e) = driver.write(brightness(active.iter().copied(), clamped)) {
-            defmt::warn!("LED write error: {}", defmt::Debug2Format(&e));
+        match driver.write(brightness(active.iter().copied(), clamped)) {
+            Err(e) if !write_err_logged => {
+                defmt::warn!("LED write error: {}", defmt::Debug2Format(&e));
+                defmt::warn!("Check MAX_LEDS — ESP32-C3 RMT supports up to ~150 LEDs");
+                write_err_logged = true;
+            }
+            Ok(_) if write_err_logged => {
+                info!("LED write recovered");
+                write_err_logged = false;
+            }
+            _ => {}
         }
 
-        Timer::after(Duration::from_millis(20)).await;
+        Timer::after(Duration::from_millis(1000 / fps as u64)).await;
     }
 }
 
@@ -274,6 +285,11 @@ fn parse_query_params(query: &str, state: &mut xiao_drone_led_controller::state:
                         state.num_leds = v.clamp(1, MAX_NUM_LEDS);
                     }
                 }
+                "fps" => {
+                    if let Ok(v) = value.parse::<u8>() {
+                        state.fps = v.clamp(1, 150);
+                    }
+                }
                 _ => {}
             }
         }
@@ -281,7 +297,7 @@ fn parse_query_params(query: &str, state: &mut xiao_drone_led_controller::state:
 }
 
 /// Build the HTML control page with current state values injected.
-fn build_html_page(brightness: u8, num_leds: u16) -> alloc::string::String {
+fn build_html_page(brightness: u8, num_leds: u16, fps: u8) -> alloc::string::String {
     alloc::format!(
         r#"<!DOCTYPE html>
 <html>
@@ -301,20 +317,24 @@ input[type=range]{{width:100%}}
 <label>Brightness: <span id="bv" class="val">{brightness}</span></label>
 <input type="range" id="br" min="0" max="255" value="{brightness}">
 <label>LED Count: <span id="lv" class="val">{num_leds}</span></label>
-<input type="range" id="lc" min="1" max="{max}" value="{num_leds}">
+<input type="range" id="lc" min="1" max="{max_leds}" value="{num_leds}">
+<label>FPS: <span id="fv" class="val">{fps}</span></label>
+<input type="range" id="fp" min="1" max="150" value="{fps}">
 <script>
-var br=document.getElementById('br'),lc=document.getElementById('lc');
-var bv=document.getElementById('bv'),lv=document.getElementById('lv');
+var br=document.getElementById('br'),lc=document.getElementById('lc'),fp=document.getElementById('fp');
+var bv=document.getElementById('bv'),lv=document.getElementById('lv'),fv=document.getElementById('fv');
 var t;
-function send(){{fetch('/set?brightness='+br.value+'&num_leds='+lc.value)}}
+function send(){{fetch('/set?brightness='+br.value+'&num_leds='+lc.value+'&fps='+fp.value)}}
 br.oninput=function(){{bv.textContent=br.value;clearTimeout(t);t=setTimeout(send,80)}};
 lc.oninput=function(){{lv.textContent=lc.value;clearTimeout(t);t=setTimeout(send,80)}};
+fp.oninput=function(){{fv.textContent=fp.value;clearTimeout(t);t=setTimeout(send,80)}};
 </script>
 </body>
 </html>"#,
         brightness = brightness,
         num_leds = num_leds,
-        max = MAX_NUM_LEDS,
+        max_leds = MAX_NUM_LEDS,
+        fps = fps,
     )
 }
 
@@ -371,7 +391,7 @@ async fn web_server(stack: Stack<'static>) {
         } else {
             // Serve the control page with current values
             let state = STATE.lock().await;
-            let page = build_html_page(state.brightness, state.num_leds);
+            let page = build_html_page(state.brightness, state.num_leds, state.fps);
             drop(state);
 
             let header = alloc::format!(

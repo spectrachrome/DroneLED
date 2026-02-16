@@ -9,9 +9,10 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 
 ### Added
 
-- Interactive web UI with brightness slider (0–255) and LED count slider (1–200)
+- Interactive web UI with brightness (0–255), LED count (1–150), and FPS (1–150) sliders
 - `/set` HTTP endpoint for real-time parameter updates via query params
-- Configurable `num_leds` field in `LedState` (default 150, max 200)
+- Configurable `num_leds` field in `LedState` (default 150, max 150)
+- Configurable `fps` field in `LedState` (default 50, range 1–150)
 - `Pattern` trait in `src/pattern.rs` for modular LED patterns
 - `RainbowCycle` pattern implementing `Pattern` trait
 - `RippleEffect` pattern: particle-based expanding rings on ring topology with random hues and deep navy background
