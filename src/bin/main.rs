@@ -694,8 +694,9 @@ async fn msp_task(mut uart: Uart<'static, esp_hal::Async>) {
 
                         // AUX7 (channel 11, index 10) 3-position strobe
                         // AUX8 (channel 12, index 11) spring switch override → full
-                        // Skip first 3 RC polls to avoid garbage triggering strobe at boot
-                        if count >= 12 && rc_tick > 3 {
+                        // Suppress strobe for first 10s after boot to avoid garbage triggers
+                        let uptime_ms = embassy_time::Instant::now().as_millis();
+                        if count >= 12 && uptime_ms > 10_000 {
                             let aux7 = rc_channels[10];
                             let aux8 = rc_channels[11];
                             let strobe_level: u8 = if aux8 > 1800 {
@@ -775,8 +776,8 @@ async fn led_task(spi_bus: SpiDmaBus<'static, esp_hal::Blocking>) {
     let mut ws = Ws2812::new(spi_bus, &mut ws_buf);
 
     let mut pulse = Pulse::new();
-    let mut slow_pulse = Pulse::new();
-    slow_pulse.set_params(400, 0.1);
+    let mut fc_pulse = Pulse::new();
+    fc_pulse.set_params(400, 0.5);
     let mut ripple = RippleEffect::new(0xDEAD_BEEF);
     let mut static_anim = StaticAnim;
 
@@ -830,6 +831,10 @@ async fn led_task(spi_bus: SpiDmaBus<'static, esp_hal::Blocking>) {
         let aux_strobe = state.aux_strobe;
         drop(state);
 
+        // Clear LEDs beyond active count so they don't hold stale colors
+        for led in buf[num_leds..].iter_mut() {
+            *led = RGB8 { r: 0, g: 0, b: 0 };
+        }
         let active = &mut buf[..num_leds];
 
         // AUX7 strobe override: fast white strobe (~25 Hz) with short attack/decay
@@ -850,7 +855,7 @@ async fn led_task(spi_bus: SpiDmaBus<'static, esp_hal::Blocking>) {
                 *led = color;
             }
 
-            match ws.write(active.iter().copied()) {
+            match ws.write(buf.iter().copied()) {
                 Err(e) if !write_err_logged => {
                     defmt::warn!("LED write error: {}", defmt::Debug2Format(&e));
                     write_err_logged = true;
@@ -891,7 +896,7 @@ async fn led_task(spi_bus: SpiDmaBus<'static, esp_hal::Blocking>) {
             flash_remaining -= 1;
 
             // Skip normal rendering and post-processing — write directly
-            match ws.write(active.iter().copied()) {
+            match ws.write(buf.iter().copied()) {
                 Err(e) if !write_err_logged => {
                     defmt::warn!("LED write error: {}", defmt::Debug2Format(&e));
                     write_err_logged = true;
@@ -908,23 +913,22 @@ async fn led_task(spi_bus: SpiDmaBus<'static, esp_hal::Blocking>) {
         }
 
         // Flight-mode override logic:
-        // - Armed → rainbow show cycle
+        // - Armed → rainbow ripple
         // - Failsafe → sliding red bars
-        // - Arming forbidden (FC connected) → slow red pulse
-        // - Arming allowed (FC connected) → solid green pulse
+        // - Disarmed (FC connected) → continuous pulse, red=forbidden / green=allowed
         // - No FC → user-selected pattern from web UI
         if fc_connected && flight_mode == FlightMode::Armed {
             armed_ripple.render(active, &mut armed_scheme);
         } else if fc_connected && flight_mode == FlightMode::Failsafe {
             render_failsafe(active, frame_counter);
-        } else if fc_connected && flight_mode == FlightMode::ArmingForbidden {
-            // FC connected, arming forbidden: slow red pulse
-            let mut red_scheme = ColorScheme::Solid(RGB8 { r: 204, g: 0, b: 0 });
-            slow_pulse.render(active, &mut red_scheme);
-        } else if fc_connected && flight_mode == FlightMode::ArmingAllowed {
-            // FC connected, disarmed: green pulse with debug overlay
-            let mut green_scheme = ColorScheme::Solid(RGB8 { r: 0, g: 204, b: 0 });
-            pulse.render(active, &mut green_scheme);
+        } else if fc_connected && (flight_mode == FlightMode::ArmingForbidden || flight_mode == FlightMode::ArmingAllowed) {
+            // FC connected, disarmed: continuous pulse, color indicates arming state
+            let mut scheme = if flight_mode == FlightMode::ArmingForbidden {
+                ColorScheme::Solid(RGB8 { r: 204, g: 0, b: 0 })
+            } else {
+                ColorScheme::Solid(RGB8 { r: 0, g: 204, b: 0 })
+            };
+            fc_pulse.render(active, &mut scheme);
 
             // Debug: first 33 LEDs show flag bits (compile-time flag)
             if MSP_DEBUG_LEDS {
@@ -988,7 +992,7 @@ async fn led_task(spi_bus: SpiDmaBus<'static, esp_hal::Blocking>) {
         ];
         apply_pipeline(active, &pipeline);
 
-        match ws.write(active.iter().copied()) {
+        match ws.write(buf.iter().copied()) {
             Err(e) if !write_err_logged => {
                 defmt::warn!("LED write error: {}", defmt::Debug2Format(&e));
                 write_err_logged = true;
