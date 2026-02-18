@@ -561,7 +561,7 @@ async fn msp_task(mut uart: Uart<'static, esp_hal::Async>) {
     }
     info!("MSP: entering poll loop");
 
-    // --- Phase 2: poll MSP_STATUS at ~10 Hz, MSP_RC at ~5 Hz ---
+    // --- Phase 2: poll MSP_STATUS + MSP_RC every tick (~20 Hz) ---
     let mut error_count: u8 = 0;
     let mut logged_raw_status = false;
     let mut rc_channels = [0u16; msp::MAX_RC_CHANNELS];
@@ -612,7 +612,7 @@ async fn msp_task(mut uart: Uart<'static, esp_hal::Async>) {
         let send_ok = Write::write_all(&mut uart, &tx_buf[..len]).await.is_ok();
 
         let frame = if send_ok {
-            read_msp_response(&mut uart, &mut parser, Duration::from_millis(100)).await
+            read_msp_response(&mut uart, &mut parser, Duration::from_millis(30)).await
         } else {
             None
         };
@@ -661,18 +661,19 @@ async fn msp_task(mut uart: Uart<'static, esp_hal::Async>) {
             let mut state = STATE.lock().await;
             state.fc_connected = false;
             state.flight_mode = FlightMode::ArmingForbidden;
+            state.aux_strobe = 0;
             drop(state);
             // Reset counter to avoid spamming state writes every tick
             error_count = 10;
         }
 
-        // Poll RC channels every 5th tick (~2 Hz) with short timeout
+        // Poll RC channels every tick with short timeout
         rc_tick = rc_tick.wrapping_add(1);
-        if rc_tick.is_multiple_of(5) {
+        {
             let len = msp::build_request(msp::MSP_RC, &[], &mut tx_buf);
             if Write::write_all(&mut uart, &tx_buf[..len]).await.is_ok() {
                 if let Some(frame) =
-                    read_msp_response(&mut uart, &mut parser, Duration::from_millis(50)).await
+                    read_msp_response(&mut uart, &mut parser, Duration::from_millis(20)).await
                 {
                     if frame.cmd == msp::MSP_RC {
                         let count =
@@ -691,16 +692,30 @@ async fn msp_task(mut uart: Uart<'static, esp_hal::Async>) {
                             );
                         }
 
-                        // AUX8 (channel 12, index 11) strobe trigger
-                        // Check BEFORE updating prev_aux so we compare old vs new
-                        if count >= 12 {
-                            let strobe = rc_channels[11] > 1800;
-                            let was_strobe = prev_aux[7] > 1800;
-                            if strobe != was_strobe {
-                                let mut state = STATE.lock().await;
-                                state.aux_strobe = strobe;
-                                info!("MSP AUX8 strobe: {}", strobe);
+                        // AUX7 (channel 11, index 10) 3-position strobe trigger
+                        // ~1100 = off, ~1400 = low, ~1900 = full
+                        if count >= 11 {
+                            let ch = rc_channels[10];
+                            let strobe_level: u8 = if ch > 1650 {
+                                255 // full
+                            } else if ch > 1250 {
+                                80  // low
+                            } else {
+                                0   // off
+                            };
+                            let prev_ch = prev_aux[6];
+                            let prev_level: u8 = if prev_ch > 1650 {
+                                255
+                            } else if prev_ch > 1250 {
+                                80
+                            } else {
+                                0
+                            };
+                            if strobe_level != prev_level {
+                                info!("MSP AUX7 strobe: {}", strobe_level);
                             }
+                            let mut state = STATE.lock().await;
+                            state.aux_strobe = strobe_level;
                         }
 
                         // Log AUX channel changes with deadband (channels 5–16)
@@ -718,7 +733,7 @@ async fn msp_task(mut uart: Uart<'static, esp_hal::Async>) {
             }
         }
 
-        Timer::after(Duration::from_millis(100)).await;
+        Timer::after(Duration::from_millis(10)).await;
     }
 }
 
@@ -732,81 +747,6 @@ fn build_color_scheme(mode: ColorMode, use_hsi: bool) -> ColorScheme {
             RGB8 { r: 204, g: 0, b: 0 },
         ),
         ColorMode::Rainbow => ColorScheme::Rainbow { hue: 0, speed: 1, use_hsi },
-    }
-}
-
-/// Number of frames per armed show sub-pattern before advancing to the next.
-const ARMED_SHOW_FRAMES: u32 = 1000; // ~10 s at 100 FPS
-
-/// Number of armed show sub-patterns in the cycle.
-const ARMED_SHOW_COUNT: u32 = 4;
-
-/// Render the armed show pattern: cyclic rainbow variations.
-///
-/// `frame` is the global frame counter; the sub-pattern index is derived from it.
-fn render_armed_show(leds: &mut [RGB8], frame: u32) {
-    let sub = (frame / ARMED_SHOW_FRAMES) % ARMED_SHOW_COUNT;
-    let num = leds.len();
-    let tick = frame as u8; // wrapping is fine for hue rotation
-
-    match sub {
-        0 => {
-            // Static rainbow gradient, slowly rotating
-            for (i, led) in leds.iter_mut().enumerate() {
-                let hue = tick.wrapping_add((i * 256 / num.max(1)) as u8);
-                *led = smart_leds::hsv::hsv2rgb(smart_leds::hsv::Hsv {
-                    hue,
-                    sat: 255,
-                    val: 255,
-                });
-            }
-        }
-        1 => {
-            // Rainbow pulse: all LEDs same hue (rotating), pulsing brightness
-            // Triangle wave: 0→1→0 over 200 frames
-            let half = (frame % 200) as u16;
-            let t = if half < 100 { half } else { 200 - half } as f32 / 100.0;
-            let brightness = 0.4 + 0.6 * t;
-            let val = (brightness * 255.0) as u8;
-            for (i, led) in leds.iter_mut().enumerate() {
-                let hue = tick.wrapping_add((i * 256 / num.max(1)) as u8);
-                *led = smart_leds::hsv::hsv2rgb(smart_leds::hsv::Hsv {
-                    hue,
-                    sat: 255,
-                    val,
-                });
-            }
-        }
-        2 => {
-            // Rainbow chase: fast scroll
-            let offset = (frame * 3) as u8;
-            for (i, led) in leds.iter_mut().enumerate() {
-                let hue = offset.wrapping_add((i * 256 / num.max(1)) as u8);
-                *led = smart_leds::hsv::hsv2rgb(smart_leds::hsv::Hsv {
-                    hue,
-                    sat: 255,
-                    val: 255,
-                });
-            }
-        }
-        _ => {
-            // Rainbow with sparkle: normal rainbow + occasional bright white
-            let xor_state = frame.wrapping_mul(2654435761); // simple hash
-            for (i, led) in leds.iter_mut().enumerate() {
-                let hue =
-                    (tick.wrapping_mul(2)).wrapping_add((i * 256 / num.max(1)) as u8);
-                let sparkle = (xor_state ^ (i as u32 * 7919)).is_multiple_of(40);
-                if sparkle {
-                    *led = RGB8 { r: 255, g: 255, b: 255 };
-                } else {
-                    *led = smart_leds::hsv::hsv2rgb(smart_leds::hsv::Hsv {
-                        hue,
-                        sat: 255,
-                        val: 255,
-                    });
-                }
-            }
-        }
     }
 }
 
@@ -845,6 +785,8 @@ async fn led_task(spi_bus: SpiDmaBus<'static, esp_hal::Blocking>) {
     let mut static_anim = StaticAnim;
 
     let mut color_scheme = build_color_scheme(ColorMode::Split, false);
+    let mut armed_scheme = ColorScheme::Rainbow { hue: 0, speed: 2, use_hsi: false };
+    let mut armed_ripple = RippleEffect::new(0xCAFE_BABE);
     let mut prev_color_mode = ColorMode::Split;
     let mut prev_use_hsi = false;
 
@@ -894,25 +836,23 @@ async fn led_task(spi_bus: SpiDmaBus<'static, esp_hal::Blocking>) {
 
         let active = &mut buf[..num_leds];
 
-        // AUX8 strobe override: fast white strobe (~12.5 Hz)
-        if aux_strobe {
-            // Toggle every 3 frames at 100 FPS ≈ 16.7 Hz strobe
-            let on = (frame_counter / 3).is_multiple_of(2);
-            let color = if on {
-                RGB8 { r: 255, g: 255, b: 255 }
+        // AUX7 strobe override: fast white strobe (~25 Hz) with short attack/decay
+        if aux_strobe > 0 {
+            // 4-frame cycle: 2 on, 2 off → 25 Hz at 100 FPS
+            const STROBE_HALF: u32 = 2;
+            const STROBE_PERIOD: u32 = STROBE_HALF * 2;
+            let peak = aux_strobe;
+            let phase = frame_counter % STROBE_PERIOD;
+            let intensity = if phase < STROBE_HALF {
+                ((phase + 1) as u16 * peak as u16 / STROBE_HALF as u16) as u8
             } else {
-                RGB8 { r: 0, g: 0, b: 0 }
+                let off_phase = phase - STROBE_HALF;
+                ((STROBE_HALF - off_phase) as u16 * peak as u16 / STROBE_HALF as u16) as u8
             };
+            let color = RGB8 { r: intensity, g: intensity, b: intensity };
             for led in active.iter_mut() {
                 *led = color;
             }
-
-            // Apply brightness + current limit but skip gamma/color balance
-            let pipeline = [
-                PostEffect::Brightness(led_brightness),
-                PostEffect::CurrentLimit { max_ma },
-            ];
-            apply_pipeline(active, &pipeline);
 
             match ws.write(active.iter().copied()) {
                 Err(e) if !write_err_logged => {
@@ -978,7 +918,7 @@ async fn led_task(spi_bus: SpiDmaBus<'static, esp_hal::Blocking>) {
         // - Arming allowed (FC connected) → solid green pulse
         // - No FC → user-selected pattern from web UI
         if fc_connected && flight_mode == FlightMode::Armed {
-            render_armed_show(active, frame_counter);
+            armed_ripple.render(active, &mut armed_scheme);
         } else if fc_connected && flight_mode == FlightMode::Failsafe {
             render_failsafe(active, frame_counter);
         } else if fc_connected && flight_mode == FlightMode::ArmingForbidden {

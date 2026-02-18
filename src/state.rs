@@ -135,8 +135,8 @@ pub struct LedState {
     pub debug_arm_box: u8,
     /// Index of the FAILSAFE box in the BOXNAMES map (255 = not found).
     pub debug_failsafe_box: u8,
-    /// AUX8 strobe active (RC channel 12 > 2000).
-    pub aux_strobe: bool,
+    /// AUX7 strobe intensity (0 = off, nonzero = peak brightness).
+    pub aux_strobe: u8,
 }
 
 impl Default for LedState {
@@ -159,7 +159,7 @@ impl Default for LedState {
             debug_flags: 0,
             debug_arm_box: 255,
             debug_failsafe_box: 255,
-            aux_strobe: false,
+            aux_strobe: 0,
         }
     }
 }
@@ -199,5 +199,5 @@ pub static STATE: Mutex<CriticalSectionRawMutex, LedState> = Mutex::new(LedState
     debug_flags: 0,
     debug_arm_box: 255,
     debug_failsafe_box: 255,
-    aux_strobe: false,
+    aux_strobe: 0,
 });
