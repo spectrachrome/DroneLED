@@ -7,6 +7,33 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 
 ## [Unreleased]
 
+### Changed
+
+- Remap AUX strobe switches: AUX7 3-way off → red/green → white, AUX8 momentary → white strobe at 80
+- Add `strobe_split` field to `LedState` for position-light strobe mode
+
+### Added
+
+- Temporal dithering module (`src/dither.rs`): adds extra perceived bit depth to WS2812B LEDs by varying quantized output frame-to-frame faster than flicker fusion
+- `DitherMode` enum with four modes: `Off`, `ErrorDiffusion` (smooth gradients), `Ordered` (Bayer 4x4, deterministic), `Hybrid` (error diffusion + correlated ordered for low brightness)
+- 8.8 fixed-point gamma LUTs (3 x 256 entries, 1536 bytes flash) computed at compile time for high-precision gamma correction in the dithered path
+- `SetDitherMode` and `SetDitherFps` BLE commands for runtime control of dithering
+- `dither_mode` and `dither_fps` fields in BLE `StateResponse`
+- Inner dither loop in LED task: animation renders at `fps` rate, strip refreshes at `dither_fps` rate (100–960 Hz) with different dither patterns between animation frames
+- Dither state auto-reset on mode change, strobe activation, and BLE flash sequences
+- Unit tests for dither algorithms (error diffusion convergence, ordered determinism, Fix16 gamma roundtrip)
+- `DisplayTestPattern` BLE command: temporarily force a color + animation combo for a given duration, overriding FC flight mode patterns
+- `CancelTestPattern` BLE command: stop a running test pattern immediately
+- `test_active` field in BLE `StateResponse` (true when a test pattern is playing)
+- RSSI-based TX link detection via MSP_ANALOG — strobe only activates when RSSI > 0 (replaces unreliable stick-center heuristic)
+- `tx_linked` field exposed in BLE `StateResponse` for app display
+
+### Removed
+
+- Wi-Fi AP hotspot, HTTP web UI, and DHCP server (BLE is now the sole control interface)
+- `embassy-net`, `smoltcp`, `edge-dhcp`, and `embedded-io` dependencies
+- `wifi` and `coex` features from `esp-radio` (no longer needed without Wi-Fi)
+
 ### Added
 
 - BLE Nordic UART Service (NUS) for app control via JSON protocol
